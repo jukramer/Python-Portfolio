@@ -1,20 +1,16 @@
-import math
 import numpy as np
 import matplotlib.figure as fgr
 
-
 import PyQt6.QtCore as qtc
 import PyQt6.QtWidgets as qtw
-from PyQt6.QtGui import QPainter, QPen
-from PyQt6.QtWidgets import QApplication, QMainWindow, QWidget, QPushButton, QSizePolicy
+from PyQt6.QtWidgets import QApplication, QMainWindow, QWidget, QPushButton
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
-import sys
-
 from matplotlib.ticker import MultipleLocator, AutoMinorLocator
 
 panelList = []
 
-# Classes
+########### CLASSES ##################
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -22,19 +18,21 @@ class MainWindow(QMainWindow):
         self.setWindowTitle('MOI Calculator')
         self.resize(1000, 700) # Set initial size
 
+        self.Ixx = 0
+        self.Iyy = 0
+        self.Ixy = 0
+        self.Cx = 0
+        self.Cy = 0
+
         # Create UI next to canvas
         # self.uiElement = memberWidgets()
         self.memberList = []
         memberWidget1 = memberWidgets(1)
         self.memberList.append(memberWidget1)
 
-
         # Create instance of matplotlib canvas
         self.canvas = mplCanvas(600, 400, 100)
         self.drawPanels()
-
-        # Scrollable area for sidebar
-        self.scrollWidget = qtw.QScrollArea()
 
         # Central widget
         central_widget = QWidget()
@@ -53,11 +51,49 @@ class MainWindow(QMainWindow):
         self.scrollWidget.setVerticalScrollBarPolicy(qtc.Qt.ScrollBarPolicy.ScrollBarAsNeeded) # horizontal scrollbar
         self.scrollWidget.setMinimumWidth(300)
 
+        # Widget to display I and C position
+        self.moiWidget = QWidget()
+        self.moiWidgetLayout = qtw.QGridLayout()
+        self.ixxLabel = qtw.QLabel(f'Ixx: {self.Ixx}')
+        self.iyyLabel = qtw.QLabel(f'Iyy: {self.Iyy}')
+        self.ixyLabel = qtw.QLabel(f'Ixy: {self.Ixy}')
+        self.cxLabel = qtw.QLabel(f'Cx: {self.Cx}')
+        self.cyLabel = qtw.QLabel(f'Cy: {self.Cy}')
+        self.updateButton = qtw.QPushButton('Update')
+        self.updateButton.clicked.connect(self.recalc)
+
+        # Make labels highlightable and change cursor when hovering
+        self.ixxLabel.setTextInteractionFlags(qtc.Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.iyyLabel.setTextInteractionFlags(qtc.Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.ixyLabel.setTextInteractionFlags(qtc.Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.cxLabel.setTextInteractionFlags(qtc.Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.cyLabel.setTextInteractionFlags(qtc.Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.ixxLabel.setCursor(qtc.Qt.CursorShape.IBeamCursor)
+        self.iyyLabel.setCursor(qtc.Qt.CursorShape.IBeamCursor)
+        self.ixyLabel.setCursor(qtc.Qt.CursorShape.IBeamCursor)
+        self.cxLabel.setCursor(qtc.Qt.CursorShape.IBeamCursor)
+        self.cyLabel.setCursor(qtc.Qt.CursorShape.IBeamCursor)
+
+        # Same for the updateButton
+        self.updateButton.setCursor(qtc.Qt.CursorShape.PointingHandCursor)
+
+        # Add widgets to layout
+        self.moiWidgetLayout.addWidget(self.ixxLabel, 0, 0)
+        self.moiWidgetLayout.addWidget(self.iyyLabel, 0, 1)
+        self.moiWidgetLayout.addWidget(self.ixyLabel, 0, 2)
+        self.moiWidgetLayout.addWidget(self.cxLabel, 1, 0)
+        self.moiWidgetLayout.addWidget(self.cyLabel, 1, 1)
+        self.moiWidgetLayout.addWidget(self.updateButton, 1, 2)
+
+        # Add widget to sidebar
+        self.moiWidget.setLayout(self.moiWidgetLayout)
+        self.sidebarLayout.addWidget(self.moiWidget)
+
         # Add member button
         self.addButton = QPushButton('New Member')
         self.addButton.clicked.connect(self.addMember)
+        self.addButton.setCursor(qtc.Qt.CursorShape.PointingHandCursor) # pointing hand when hovering over button
         self.memberList.append(self.addButton)
-        # self.sidebarLayout.addWidget(self.addButton)
 
         # Add memberwidgets
         for memberWidget in self.memberList:
@@ -65,7 +101,7 @@ class MainWindow(QMainWindow):
 
         self.layout.addWidget(self.scrollWidget)
         self.layout.addWidget(self.canvas)
-        # self.layout.setContentsMargins(20, 20, 20, 20)
+
         self.layout.setSpacing(15)
         central_widget.setLayout(self.layout)
 
@@ -73,19 +109,29 @@ class MainWindow(QMainWindow):
 
     def drawPanels(self):
         xVals, yVals = [], []
-
+        self.canvas.ax.clear()
         for panel in panelList:
-            # Generate points on panel
-            x = np.linspace(panel.x1, panel.x2, 2)
-            y = np.linspace(panel.y1, panel.y2, 2)
+            try:
+                # Generate points on panel
+                x = np.linspace(panel.x1, panel.x2, 2)
+                y = np.linspace(panel.y1, panel.y2, 2)
 
-            xVals.append(panel.x1)
-            xVals.append(panel.x2)
-            yVals.append(panel.y1)
-            yVals.append(panel.y2)
+                xVals.append(panel.x1)
+                xVals.append(panel.x2)
+                yVals.append(panel.y1)
+                yVals.append(panel.y2)
 
-            # Plot panels
-            self.canvas.ax.plot(x, y, color='black', linewidth=panel.t)
+                # Plot panels
+                self.canvas.ax.plot(x, y, color='black', linewidth=panel.t)
+
+            except:
+                # This try except statement prevents funky panels from breaking the program
+                pass
+
+        if len(xVals) == 0:
+            xVals.append(0)
+        if len(yVals) == 0:
+            yVals.append(0)
 
         # Calculate limits to ensure square plot AR
         xLims = np.array([min(xVals)-5, max(xVals)+5])
@@ -119,6 +165,7 @@ class MainWindow(QMainWindow):
         self.canvas.draw()
 
     def addMember(self):
+        global panelList
         member = memberWidgets(len(self.memberList))
 
         self.memberList.insert(-1, member)
@@ -126,15 +173,43 @@ class MainWindow(QMainWindow):
             self.sidebarLayout.addWidget(memberWidget)
             self.layout.setAlignment(qtc.Qt.AlignmentFlag.AlignTop)
 
-        panel = PanelObject
-        panelList.append(panel)
-
         print('ello')
 
     def update(self):
         for memberWidget in self.memberList:
             self.sidebarLayout.addWidget(memberWidget)
             self.layout.setAlignment(qtc.Qt.AlignmentFlag.AlignTop)
+
+    def recalc(self):
+        try:
+            print(self.memberList)
+            panelList.clear()
+            for member in self.memberList:
+                print('sup')
+                x1, x2 = float(member.x1Box.text()), float(member.x2Box.text())
+                y1, y2 = float(member.y1Box.text()), float(member.y2Box.text())
+                t = float(member.tBox.text())
+                panel = PanelObject(t, x1, y1, x2, y2)
+                panelList.append(panel)
+                self.drawPanels()
+                print(member)
+
+            print('hello')
+
+        except:
+            print(panelList)
+            self.Cx, self.Cy = calcCentroid()
+            self.Ixx, self.Iyy, self.Ixy = calcFinalInertia()
+            print(self.Ixx, self.Iyy, self.Ixy, self.Cx, self.Cy)
+
+            #Update labels
+            self.ixxLabel.setText(f'Ixx: {round(self.Ixx, 2)}')
+            self.iyyLabel.setText(f'Iyy: {round(self.Iyy, 2)}')
+            self.ixyLabel.setText(f'Ixy: {round(self.Ixy, 2)}')
+            self.cxLabel.setText(f'Cx: {round(self.Cx, 2)}')
+            self.cyLabel.setText(f'Cy: {round(self.Cy, 2)}')
+
+            print('ow')
 
 
 class mplCanvas(FigureCanvas):
@@ -161,6 +236,7 @@ class memberWidgets(qtw.QWidget):
         self.typeLabel = qtw.QLabel('Type:')
         self.typeSelector = qtw.QComboBox()
         self.typeSelector.addItem('Rectangular')
+        self.typeSelector.setCursor(qtc.Qt.CursorShape.PointingHandCursor)  # pointing hand when hovering over button
         self.layout.addWidget(self.typeLabel, 1, 0)
         self.layout.addWidget(self.typeSelector, 1, 1)
         self.typeSelector.setStyleSheet(""" 
@@ -202,6 +278,7 @@ class memberWidgets(qtw.QWidget):
         # Delete button
         self.delButton = qtw.QPushButton('Remove')
         self.delButton.clicked.connect(self.removeMember)
+        self.delButton.setCursor(qtc.Qt.CursorShape.PointingHandCursor)  # pointing hand when hovering over button
         self.layout.addWidget(self.delButton, 5,0)
 
         self.layout.setAlignment(qtc.Qt.AlignmentFlag.AlignTop)
@@ -247,26 +324,9 @@ class PanelObject:
         Ixy = (self.t * self.b ** 3 * np.sin(self.theta) * np.cos(self.theta)) / 12
 
         return Ixx, Iyy, Ixy
+    
 
-
-def makePanels():
-    while True:
-        # Gather coordinates of member
-        x1 = float(input('x1:'))
-        x2 = float(input('x2:'))
-        y1 = float(input('y1:'))
-        y2 = float(input('y2:'))
-        t = float(input('t:'))
-
-        member = PanelObject(t, x1, y1, x2, y2)
-        panelList.append(member)
-
-        cnt = input("Add another member? (y/n)")
-        if cnt == 'y':
-            pass
-        else:
-            break
-
+################ FUNCTIONS ######################
 
 def calcCentroid():
     global panelList
@@ -278,10 +338,14 @@ def calcCentroid():
         Qy += panel.yc*panel.A
         A += panel.A
 
-    xc = Qx/A
-    yc = Qy/A
+    try:
+        xc = Qx/A
+        yc = Qy/A
 
-    return xc, yc
+        return xc, yc
+
+    except:
+        return 0, 0
 
 
 def calcFinalInertia():
@@ -302,14 +366,6 @@ def calcFinalInertia():
 
 
 if __name__ == '__main__':
-    # makePanels()
-    # print(panelList)
-    # print(calcFinalInertia())
-    panel1 = PanelObject(5, -50, 50, 50, 50)
-    panelList.append(panel1)
-    panel2 = PanelObject(5, -50, -50, 50, 50)
-    panelList.append(panel2)
-
     app = QApplication([]) # Define app
     widget = MainWindow() # Initialize window class
     widget.show() # Show window
