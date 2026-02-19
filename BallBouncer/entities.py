@@ -33,7 +33,7 @@ class Ring:
         self.a = a # [rad/s^2] angular acceleration
         
         self.color = QColor()
-        self.color.setHsl(h, 200, 160)
+        self.color.setHsl(int(h), 200, 160)
 
     def getCollisionPoint(self, x, y):
         # finds closest point on the ring to a certain point (x,y)

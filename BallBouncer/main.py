@@ -33,11 +33,14 @@ class MainWindow(QMainWindow):
         centralWidgetLayout = qtw.QHBoxLayout()
 
         # Define ring
-        ringInitArr = ((80, 70, 60, 50, 40),
-                       (200, 205, 210, 215, 220),
-                       (200, 220, 240, 260, 280))
+        global ringInitArr
+        N_RINGS = 20
+        LEN_GAP = 100
+        ringInitArr = (np.linspace(80, 65, N_RINGS).tolist(), # angular velocities 
+                       np.linspace(100, 200, N_RINGS).tolist(), # radii
+                       np.linspace(100, 240, N_RINGS).tolist()) # hues
         
-        self.ringList = [Ring(ringInitArr[0][i], ringInitArr[1][i], 2, 0, 20, 100, ringInitArr[2][i]) for i in range(len(ringInitArr[0]))]
+        self.ringList = [Ring(ringInitArr[0][i], ringInitArr[1][i], 3, 0, 20, LEN_GAP, ringInitArr[2][i]) for i in range(len(ringInitArr[0]))]
         
         # Canvas
         self.canvas = DrawingWidget(self.ringList)
@@ -141,18 +144,19 @@ class DrawingWidget(QWidget):
         self.setWindowTitle("PyQt6 Drawing Example")
         self.setGeometry(100, 100, 800, 600)
         self.ballList = []
-        self.ringList = ringList # TODO: Figure out ring handling
+        self.ringList = ringList
 
         self.timer = qtc.QTimer(self)
         self.timer.timeout.connect(self.simLoop)
         self.timer.start(int(dt*1000))
 
     def paintEvent(self, event):
+        scalingFactor = 1.5*220/max((ring.r for ring in self.ringList))
         # initialize painter
         painter = QPainter(self)
         painter.fillRect(self.rect(), QColor("#292929")) #bg color
         painter.translate(int(self.width()/2), int(self.height()/2)) # move origin to center
-        painter.scale(1.5, -1.5) # flip image about x axis (so y axis is upwards +)
+        painter.scale(scalingFactor, -scalingFactor) # flip image about x axis (so y axis is upwards +)
 
         # draw ring
         for ring in self.ringList:
@@ -185,6 +189,8 @@ class DrawingWidget(QWidget):
 
     def resetButton(self):
         self.ballList.clear()
+        self.ringList = [Ring(ringInitArr[0][i], ringInitArr[1][i], 3, 0, 20, 100, ringInitArr[2][i]) for i in range(len(ringInitArr[0]))]
+        
             
 
 ################### FUNCTIONS #######################
@@ -211,9 +217,7 @@ def collision(a,b):
         beta = np.pi/2 - phi
         
         # if ball goes through gap
-        print(np.rad2deg(beta), a.thetaGap)
         if np.rad2deg(beta) > a.thetaGap%360 and np.rad2deg(beta) < (a.thetaGap + a.lenGap)%360:
-            print('escape!')
             b.escaped = True
             a.color.setHsl(0, 255, 100)
             return b.vx, b.vy
