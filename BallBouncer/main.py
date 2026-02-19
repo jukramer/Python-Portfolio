@@ -1,10 +1,10 @@
+from entities import *
 import numpy as np
 import sys
-from entities import *
 
 import PyQt6.QtCore as qtc
-import PyQt6.QtWidgets as qtw
 from PyQt6.QtGui import QPainter, QPen, QColor
+import PyQt6.QtWidgets as qtw
 from PyQt6.QtWidgets import QApplication, QMainWindow, QWidget
 
 # Define parameters
@@ -32,20 +32,28 @@ class MainWindow(QMainWindow):
         centralWidget = qtw.QWidget()
         centralWidgetLayout = qtw.QHBoxLayout()
 
-        # Define ring and ball
-        self.ring = Ring(0, 200, 3)
-
+        # Define ring
+        ringInitArr = ((80, 70, 60, 50, 40),
+                       (200, 205, 210, 215, 220),
+                       (200, 220, 240, 260, 280))
+        
+        self.ringList = [Ring(ringInitArr[0][i], ringInitArr[1][i], 2, 0, 20, 100, ringInitArr[2][i]) for i in range(len(ringInitArr[0]))]
+        
         # Canvas
-        self.canvas = DrawingWidget(self.ring)
+        self.canvas = DrawingWidget(self.ringList)
 
         # Sidebar for controlling simulation
         sidebar = qtw.QWidget()
         sidebarLayout = qtw.QVBoxLayout()
         coordWidget = qtw.QWidget()
+        ringWidget = qtw.QWidget()
 
         self.ballLabel = qtw.QLabel(f'Amount of balls: {len(self.canvas.ballList)}')
+        self.ringLabel = qtw.QLabel(f'Amount of rings: {len(self.canvas.ringList)}')
         sidebarLayout.addWidget(self.ballLabel)
+        sidebarLayout.addWidget(self.ringLabel)
 
+        # Ball initial condition input fields
         self.xLabel = qtw.QLabel('x:')
         self.xBox = qtw.QLineEdit()
         self.xBox.setText('0')
@@ -62,6 +70,7 @@ class MainWindow(QMainWindow):
         self.rBox = qtw.QLineEdit()
         self.rBox.setText('5')
 
+        # Position input elements
         coordWidgetLayout = qtw.QGridLayout()
         coordWidgetLayout.addWidget(self.xLabel, 0, 0)
         coordWidgetLayout.addWidget(self.xBox, 0, 1)
@@ -82,7 +91,25 @@ class MainWindow(QMainWindow):
         resetButton.clicked.connect(self.resetButton)
         sidebarLayout.addWidget(addButton)
         sidebarLayout.addWidget(resetButton)
-
+        
+        # Ring initial condition input fields
+        # self.rLabelRing = qtw.QLabel('r:')
+        # self.rBoxRing = qtw.QLineEdit()
+        # self.rBoxRing.setText('150')
+        # self.wLabelRing = qtw.QLabel('w:')
+        # self.wBoxRing = qtw.QLineEdit()
+        # self.wBoxRing.setText('0')
+        # self.thetaGapLabelRing = qtw.QLabel('Gap Position: ')
+        # self.thetaGapBoxRing = qtw.QLineEdit()
+        # self.thetaGapBoxRing.setText('0')
+        # self.lenGapLabelRing = qtw.QLabel('Gap Length: ')
+        # self.lenGapBoxRing = qtw.QLineEdit()
+        # self.lenGapBoxRing.setText('0')
+        
+        # addRingButton = qtw.QPushButton('Add Ring')
+        # addRingButton.clicked.connect(self.addRingButton)
+        # sidebarLayout.addWidget(addRingButton)
+        
         sidebar.setLayout(sidebarLayout)
         sidebar.setMaximumWidth(200)
         sidebarLayout.setAlignment(qtc.Qt.AlignmentFlag.AlignTop)
@@ -93,26 +120,28 @@ class MainWindow(QMainWindow):
         centralWidget.setLayout(centralWidgetLayout)
         self.setCentralWidget(centralWidget)
 
-    def simLoop(self):
-        loop(self.ring, self.ball)
+    # def simLoop(self):
+    #     for ring in self.ringList:
+    #         ring.thetaGap += ring.w*dt
+    #         loop(ring, self.ball)
 
     def addButton(self):
         ball = Ball(float(self.xBox.text()), float(self.yBox.text()), float(self.vxBox.text()), float(self.vyBox.text()), r=float(self.rBox.text()))
         self.canvas.addButton(ball)
         self.ballLabel.setText(f'Amount of balls: {len(self.canvas.ballList)}')
-
+        
     def resetButton(self):
         self.canvas.resetButton()
         self.ballLabel.setText(f'Amount of balls: {len(self.canvas.ballList)}')
         
 
 class DrawingWidget(QWidget):
-    def __init__(self, ring):
+    def __init__(self, ringList):
         super().__init__()
         self.setWindowTitle("PyQt6 Drawing Example")
         self.setGeometry(100, 100, 800, 600)
-        self.ring = ring
         self.ballList = []
+        self.ringList = ringList # TODO: Figure out ring handling
 
         self.timer = qtc.QTimer(self)
         self.timer.timeout.connect(self.simLoop)
@@ -121,17 +150,16 @@ class DrawingWidget(QWidget):
     def paintEvent(self, event):
         # initialize painter
         painter = QPainter(self)
-        painter.fillRect(self.rect(), QColor('#262626')) #bg color
+        painter.fillRect(self.rect(), QColor("#292929")) #bg color
         painter.translate(int(self.width()/2), int(self.height()/2)) # move origin to center
         painter.scale(1.5, -1.5) # flip image about x axis (so y axis is upwards +)
 
         # draw ring
-        ringColor = QColor()
-        ringColor.setHsl(200, 200, 160)
-        pen = QPen(ringColor, self.ring.t)
-        painter.setPen(pen)
-        painter.drawArc(qtc.QRect(int((self.ring.x)-(self.ring.r)), int(self.ring.y-(self.ring.r)), int(2*self.ring.r), int(2*self.ring.r)), 0, 360*16)
-
+        for ring in self.ringList:
+            pen = QPen(ring.color, ring.t)
+            painter.setPen(pen)
+            painter.drawArc(qtc.QRect(int((ring.x)-(ring.r)), int(ring.y-(ring.r)), int(2*ring.r), int(2*ring.r)), int(ring.thetaGap*16), int((360-ring.lenGap)*16))
+        
         # draw balls
         for i, ball in enumerate(self.ballList):
             color = QColor('#262626')
@@ -141,11 +169,15 @@ class DrawingWidget(QWidget):
             painter.drawEllipse(int(ball.x)-int(1/2*ball.t), int(ball.y)-int(1/2*ball.t), int(ball.t), int(ball.t))
 
     def simLoop(self):
+        for ring in self.ringList:
+            ring.thetaGap += ring.w*dt
+            
         for ball in self.ballList:
             try:
-                loop(self.ring, ball)
+                loop(self.ringList, ball)
             except:
                 pass
+                
         self.update()
 
     def addButton(self, ball):
@@ -155,7 +187,7 @@ class DrawingWidget(QWidget):
         self.ballList.clear()
             
 
-################### Functions #######################
+################### FUNCTIONS #######################
 
 def checkCollision(a, b):
     ax, ay = a.getCollisionPoint(b.x, b.y)[0:2]
@@ -176,11 +208,22 @@ def collision(a,b):
     elif (isinstance(a, Ring) and isinstance(b, Ball)):
         # convert xy to nt coordinates (n+ radially in, t+ counterclockwise w.r.t ring)
         phi = np.arctan2(b.y-a.y, b.x-a.x)
+        beta = np.pi/2 - phi
+        
+        # if ball goes through gap
+        print(np.rad2deg(beta), a.thetaGap)
+        if np.rad2deg(beta) > a.thetaGap%360 and np.rad2deg(beta) < (a.thetaGap + a.lenGap)%360:
+            print('escape!')
+            b.escaped = True
+            a.color.setHsl(0, 255, 100)
+            return b.vx, b.vy
+        
         vn0 = b.vx*np.cos(phi) + b.vy*np.sin(phi)
         vt0 = b.vx*np.sin(phi) - b.vy*np.cos(phi) 
 
         vn = -vn0*b.e
         vt = vt0-a.w*a.r  
+        vt = vt0
         
         # convert back to xy coords
         vx = vn*np.cos(phi) + vt*np.sin(phi)
@@ -193,14 +236,15 @@ def collision(a,b):
         raise collisionException('Invalid objects (must be ring + ball or ball + ball). ball + ring is not valid.')   
 
 
-def loop(ring, ball):
+def loop(ringList, ball):
     global t
-    vx, vy = ball.vx, ball.vy
-
+    vx, vy = ball.vx, ball.vy      
+    
     # Collision
-    if checkCollision(ring, ball):
-        vx, vy = collision(ring, ball)
-
+    for ring in ringList:
+        if checkCollision(ring, ball):
+            vx, vy = collision(ring, ball)
+    
     # Gravity 
     vy = vy + g*dt
 
@@ -213,7 +257,7 @@ def loop(ring, ball):
 
     # Ensure balls cannot escape ring
     phi = np.arctan2(ball.y-ring.y, ball.x-ring.x) # angle between ray from center of ring to ball and positive x axis
-    if np.sqrt((ball.x-ring.x)**2 + (ball.y-ring.y)**2) > ring.r:
+    if np.sqrt((ball.x-ring.x)**2 + (ball.y-ring.y)**2) > ring.r and not ball.escaped:
         ball.x = (ring.r - ring.t - ball.t)*np.cos(phi)
         ball.y = (ring.r - ring.t - ball.t)*np.sin(phi)
 
@@ -221,9 +265,6 @@ def loop(ring, ball):
 
 
 if __name__ == '__main__':
-    ring = Ring(5, 200, 3)
-    ball = Ball(0, 0, 0, 0)
-
     app = QApplication(sys.argv) # Define app
     window = MainWindow() # Initialize window class
     window.show() # Show window

@@ -1,5 +1,8 @@
-import numpy as np
 import math
+import numpy as np
+
+from PyQt6.QtGui import QColor
+
 
 class Ball:
     def __init__(self, x, y, vx, vy, e=1, r=5, m=10, ballCollision = False):
@@ -12,18 +15,25 @@ class Ball:
         self.theta = np.arctan2(self.vy, self.vx) # velocity angle
         self.ballCollision = ballCollision
         self.e = e # coefficient of restitution
+        self.escaped = False
 
     def getCollisionPoint(self):
         return self.x, self.y
 
 
 class Ring:
-    def __init__(self, w, r, t, a=0):
+    def __init__(self, w, r, t, a=0, thetaGap=0, lenGap=0, h=200):
         self.x, self.y = 0, 0 # position (usually always at 0,0)
-        self.w = w # angular velocity
         self.r = r
         self.t = t # thickness
-        self.a = a # angular acceleration
+        
+        self.thetaGap = thetaGap # [deg] angular position of gap from positive y axis
+        self.lenGap = lenGap # [deg] arc length of gap, CCW, from 
+        self.w = w # [rad/s] angular velocity
+        self.a = a # [rad/s^2] angular acceleration
+        
+        self.color = QColor()
+        self.color.setHsl(h, 200, 160)
 
     def getCollisionPoint(self, x, y):
         # finds closest point on the ring to a certain point (x,y)
