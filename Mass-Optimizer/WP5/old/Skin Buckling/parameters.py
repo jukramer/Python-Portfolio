@@ -1,0 +1,4 @@
+E = 72.4e9
+POISSON_RATIO = 1/3
+kC = 0
+

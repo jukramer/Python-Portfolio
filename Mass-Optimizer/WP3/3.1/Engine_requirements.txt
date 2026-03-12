@@ -1,0 +1,24 @@
+ == Engine considerations == 
+Required cruise speed and or maximum speed
+Required maximum operating altitude
+Required range and range economy
+Noise regulations
+Installed weight
+Reliability and maintainability
+Fuel amount needed
+Fuel cost
+Fuel availability
+Specific customer or market demands
+Timely certification
+
+ == Placement considerations ==
+Longitudinal and lateral stability in OEI conditions
+Drag of the installation
+Weight and balance consequences
+Ground clearance
+Accessibility and maintainability
+Firewall requierements
+Possible clearance for thrust reversing
+Exhaust jet interference
+
+Get required mach-altitude envelope
