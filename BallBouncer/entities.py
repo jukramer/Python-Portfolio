@@ -27,8 +27,8 @@ class Ring:
         self.r = r
         self.t = t # thickness
         
-        self.thetaGap = thetaGap # [deg] angular position of gap from positive y axis
-        self.lenGap = lenGap # [deg] arc length of gap, CCW, from 
+        self.thetaGap = thetaGap # [deg] angular position of gap from positive x axis, CCW+
+        self.lenGap = lenGap # [deg] arc length of gap, CCW, from thetaGap
         self.w = w # [rad/s] angular velocity
         self.a = a # [rad/s^2] angular acceleration
         

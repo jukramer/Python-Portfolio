@@ -34,10 +34,11 @@ class MainWindow(QMainWindow):
 
         # Define ring
         global ringInitArr
-        N_RINGS = 20
-        LEN_GAP = 100
-        ringInitArr = (np.linspace(80, 65, N_RINGS).tolist(), # angular velocities 
-                       np.linspace(100, 200, N_RINGS).tolist(), # radii
+        
+        N_RINGS = 10
+        LEN_GAP = 60
+        ringInitArr = (np.linspace(60, 52, N_RINGS).tolist(), # angular velocities 
+                       np.linspace(rMin:=125, rMin+N_RINGS*5, N_RINGS).tolist(), # radii
                        np.linspace(100, 240, N_RINGS).tolist()) # hues
         
         self.ringList = [Ring(ringInitArr[0][i], ringInitArr[1][i], 3, 0, 20, LEN_GAP, ringInitArr[2][i]) for i in range(len(ringInitArr[0]))]
@@ -94,25 +95,7 @@ class MainWindow(QMainWindow):
         resetButton.clicked.connect(self.resetButton)
         sidebarLayout.addWidget(addButton)
         sidebarLayout.addWidget(resetButton)
-        
-        # Ring initial condition input fields
-        # self.rLabelRing = qtw.QLabel('r:')
-        # self.rBoxRing = qtw.QLineEdit()
-        # self.rBoxRing.setText('150')
-        # self.wLabelRing = qtw.QLabel('w:')
-        # self.wBoxRing = qtw.QLineEdit()
-        # self.wBoxRing.setText('0')
-        # self.thetaGapLabelRing = qtw.QLabel('Gap Position: ')
-        # self.thetaGapBoxRing = qtw.QLineEdit()
-        # self.thetaGapBoxRing.setText('0')
-        # self.lenGapLabelRing = qtw.QLabel('Gap Length: ')
-        # self.lenGapBoxRing = qtw.QLineEdit()
-        # self.lenGapBoxRing.setText('0')
-        
-        # addRingButton = qtw.QPushButton('Add Ring')
-        # addRingButton.clicked.connect(self.addRingButton)
-        # sidebarLayout.addWidget(addRingButton)
-        
+                
         sidebar.setLayout(sidebarLayout)
         sidebar.setMaximumWidth(200)
         sidebarLayout.setAlignment(qtc.Qt.AlignmentFlag.AlignTop)
@@ -122,11 +105,6 @@ class MainWindow(QMainWindow):
 
         centralWidget.setLayout(centralWidgetLayout)
         self.setCentralWidget(centralWidget)
-
-    # def simLoop(self):
-    #     for ring in self.ringList:
-    #         ring.thetaGap += ring.w*dt
-    #         loop(ring, self.ball)
 
     def addButton(self):
         ball = Ball(float(self.xBox.text()), float(self.yBox.text()), float(self.vxBox.text()), float(self.vyBox.text()), r=float(self.rBox.text()))
@@ -151,7 +129,7 @@ class DrawingWidget(QWidget):
         self.timer.start(int(dt*1000))
 
     def paintEvent(self, event):
-        scalingFactor = 1.5*220/max((ring.r for ring in self.ringList))
+        scalingFactor = 1.5*260/max((ring.r for ring in self.ringList))
         # initialize painter
         painter = QPainter(self)
         painter.fillRect(self.rect(), QColor("#292929")) #bg color
@@ -162,7 +140,7 @@ class DrawingWidget(QWidget):
         for ring in self.ringList:
             pen = QPen(ring.color, ring.t)
             painter.setPen(pen)
-            painter.drawArc(qtc.QRect(int((ring.x)-(ring.r)), int(ring.y-(ring.r)), int(2*ring.r), int(2*ring.r)), int(ring.thetaGap*16), int((360-ring.lenGap)*16))
+            painter.drawArc(qtc.QRect(int((ring.x)-(ring.r)), int(ring.y-(ring.r)), int(2*ring.r), int(2*ring.r)), int(ring.thetaGap*16), int(-(360-ring.lenGap)*16))
         
         # draw balls
         for i, ball in enumerate(self.ballList):
@@ -177,11 +155,8 @@ class DrawingWidget(QWidget):
             ring.thetaGap += ring.w*dt
             
         for ball in self.ballList:
-            try:
-                loop(self.ringList, ball)
-            except:
-                pass
-                
+            loop(self.ringList, ball)
+
         self.update()
 
     def addButton(self, ball):
@@ -189,12 +164,18 @@ class DrawingWidget(QWidget):
 
     def resetButton(self):
         self.ballList.clear()
-        self.ringList = [Ring(ringInitArr[0][i], ringInitArr[1][i], 3, 0, 20, 100, ringInitArr[2][i]) for i in range(len(ringInitArr[0]))]
+        
+        global ringInitArr
+        N_RINGS = 10
+        LEN_GAP = 60
+        ringInitArr = (np.linspace(40, 25, N_RINGS).tolist(), # angular velocities 
+                       np.linspace(rMin:=125, rMin+N_RINGS*5, N_RINGS).tolist(), # radii
+                       np.linspace(100, 240, N_RINGS).tolist()) # hues
+        
+        self.ringList = [Ring(ringInitArr[0][i], ringInitArr[1][i], 3, 0, 20, LEN_GAP, ringInitArr[2][i]) for i in range(len(ringInitArr[0]))]
         
             
-
 ################### FUNCTIONS #######################
-
 def checkCollision(a, b):
     ax, ay = a.getCollisionPoint(b.x, b.y)[0:2]
     bx, by = b.getCollisionPoint()[0:2]
@@ -213,25 +194,51 @@ def collision(a,b):
 
     elif (isinstance(a, Ring) and isinstance(b, Ball)):
         # convert xy to nt coordinates (n+ radially in, t+ counterclockwise w.r.t ring)
-        phi = np.arctan2(b.y-a.y, b.x-a.x)
-        beta = np.pi/2 - phi
+        phi = np.arctan2(b.y-a.y, b.x-a.x) # w.r.t. x axis, CCW+
+        beta = -phi # due to flipping of the y axis on the canvas, gap is drawn CW+ instead of CCW+. beta is needed for ring gap calculations
+                
+        vn0 = b.vx*np.cos(phi) + b.vy*np.sin(phi)
+        vt0 = b.vx*np.sin(phi) - b.vy*np.cos(phi) 
         
         # if ball goes through gap
         if np.rad2deg(beta) > a.thetaGap%360 and np.rad2deg(beta) < (a.thetaGap + a.lenGap)%360:
             b.escaped = True
             a.color.setHsl(0, 255, 100)
+            
+            # # if ball hits edge of gap
+            # if abs(np.rad2deg(beta) - a.thetaGap%360) < 2 and vt0 < 0: # CCW side of gap
+            #     print('hit edge!')
+            #     vn = vn0
+            #     vt = -vt0*b.e
+                
+            #     # convert back to xy coords
+            #     vx = vn*np.cos(phi) + vt*np.sin(phi)
+            #     vy = vn*np.sin(phi) - vt*np.cos(phi)
+                
+            #     return vx, vy
+                
+            # elif abs(np.rad2deg(beta) - (a.thetaGap + a.lenGap)%360) < 2 and vt0 > 0: # CW side of gap
+            #     vn = vn0
+            #     vt = -vt0*b.e
+                
+            #     # convert back to xy coords
+            #     vx = vn*np.cos(phi) + vt*np.sin(phi)
+            #     vy = vn*np.sin(phi) - vt*np.cos(phi)
+                
+            #     return vx, vy   
+            
             return b.vx, b.vy
         
-        vn0 = b.vx*np.cos(phi) + b.vy*np.sin(phi)
-        vt0 = b.vx*np.sin(phi) - b.vy*np.cos(phi) 
-
         vn = -vn0*b.e
-        vt = vt0-a.w*a.r  
         vt = vt0
         
         # convert back to xy coords
         vx = vn*np.cos(phi) + vt*np.sin(phi)
         vy = vn*np.sin(phi) - vt*np.cos(phi)
+        
+        # nudge ball to prevent trapping
+        # b.x = (a.r - b.t - 1.5)*np.cos(phi)
+        # b.y = (a.r - b.t - 1.5)*np.sin(phi)
 
         return vx, vy
 
