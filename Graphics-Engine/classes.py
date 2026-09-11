@@ -3,6 +3,7 @@ import itertools as it
 import matplotlib.pyplot as plt
 import numpy as np
 import pygame as pg
+import warnings as wn
 
 RX = lambda x: np.array([[1, 0, 0],
                          [0, np.cos(x), -np.sin(x)],
@@ -21,7 +22,7 @@ FRAMERATE = 60
 # =========================== CLASSES ============================
 # ============== GEOMETRY
 class Object:
-    def __init__(self, vertices: np.ndarray, faces: np.ndarray, lines: np.ndarray):
+    def __init__(self, vertices: np.ndarray, faces: np.ndarray, lines: np.ndarray, normals: np.ndarray, color: tuple):
         if not type(vertices) in {np.ndarray, list, tuple}:
             raise TypeError('Vertices must be of type np.ndarray, list, or tuple.')
         
@@ -33,6 +34,8 @@ class Object:
         self.vertices = vertices
         self.faces = faces
         self.lines = lines
+        self.normals = normals
+        self.color = color
     
     def addVertices(self, vertices: np.ndarray):
         vertices = np.array(vertices)
@@ -41,16 +44,18 @@ class Object:
         
 
 class Cube(Object):
-    def __init__(self, pos: tuple, rotation: tuple, len: float):
+    def __init__(self, pos: tuple, rotation: tuple, len: float, color: tuple):
         self.translation = list(pos)
         self.vertices = np.array(list(it.product([1, -1], repeat=3)))
         self.scaling = [len]*3
-        self.rotation = list(rotation)
+        self.rotation = list(map(np.deg2rad, rotation))
+        self.color = np.array(color)
         
         self.faces = None
         self.lines = None
+        self.normals = None
         self.findFaces()
-        super().__init__(self.vertices, self.faces, self.lines)
+        super().__init__(self.vertices, self.faces, self.lines, self.normals, self.color)
         
     def findFaces(self):
         N = self.vertices.shape[0]
@@ -58,18 +63,18 @@ class Cube(Object):
         cycleVerticesArr = np.transpose(self.vertices[idx], (1, 2, 0))
         
         distArr = np.linalg.norm(cycleVerticesArr[:,:,1:] - np.repeat(self.vertices[:,:,None], N-1, axis=2), axis=1)
-        
-        # Drop one of each opposite corner pair
-        maxIdx = np.argsort(distArr)[0,6] + 1
-        minIdx = np.argsort(distArr)[0,:3] + 1
+       
+        # Drop one of each opposite corner pair (logically, 3 adjacent and opposite vertex give complete opposite corner vertex set)
+        maxIdx = np.argsort(distArr)[0,6] + 1 # farthest (opposite) vertex to vertex 0
+        minIdx = np.argsort(distArr)[0,:3] + 1 # 3 closest vertices to vertex 0
         maskIdx = np.ones(8, dtype=bool)
         maskIdx[np.union1d(maxIdx, minIdx)] = False
         verticesKept = cycleVerticesArr[0][:, maskIdx].T
         
-        minIdx = np.argsort(distArr)[:,:3]
+        # Find indices of adjacent vertices to each vertex
+        minIdx = np.argsort(distArr)[:,:3] # 3 closest vertices to vertex 0
         adjacentVertices = np.dstack([self.vertices[:,:,None],
                                       cycleVerticesArr[:,:,1:][np.arange(0, N)[:,None,None], np.arange(0, 3)[None,:,None], minIdx[:,None,:]]])
-        
         matchesKept = np.all(self.vertices[:,None,:] == verticesKept[None,:,:], axis=-1)
         idxKept = np.argmax(matchesKept, axis=0)
         
@@ -81,17 +86,46 @@ class Cube(Object):
         self.faces = adjacentVerticesKept[:,idxFaces[:-1]].reshape(-1,3)
         self.faces = self.faces[self.faces[:,0].argsort()]
         
+        # Find lines
         lineIdx = np.array([[0,1],[0,2],[1,2]])
         self.lines = self.faces[:,lineIdx]
+        
+        # Find outward normals
+        lineVerts = self.vertices[self.lines]
+        lineVecs = lineVerts[:,:2,1,:] - lineVerts[:,:2,0,:]
+        self.normals = np.cross(lineVecs[:,0,:], lineVecs[:,1,:], axis=1)
+        self.normals = self.normals/np.linalg.norm(self.normals, axis=1)[:,None]
+        
+        # Ensure normals point outward
+        normalMask = (self.vertices[self.faces][:,0] * self.normals < 0) & ~(self.vertices[self.faces][:,0] * self.normals == 0)
+        self.normals[normalMask] *= -1
+        
+    def findNormals(self):
+        # Find outward normals
+        lineVerts = self.vertices[self.lines]
+        lineVecs = lineVerts[:,:2,1,:] - lineVerts[:,:2,0,:]
+        self.normals = np.cross(lineVecs[:,0,:], lineVecs[:,1,:], axis=1)
+        self.normals = self.normals/np.linalg.norm(self.normals, axis=1)[:,None]
+        
+        # Ensure normals point outward
+        normalMask = (self.vertices[self.faces][:,0] * self.normals < 0) & ~(self.vertices[self.faces][:,0] * self.normals == 0)
+        self.normals[normalMask] *= -1
         
     def setTranslation(self, x, y, z):
         self.translation = [x,y,z]
         
     def setRotation(self, rx, ry, rz):
-        self.rotation = [rx,ry,rz]
+        self.rotation = [np.deg2rad(rx), np.deg2rad(ry), np.deg2rad(rz)]
         
     def setLen(self, len):
         self.scaling = [len]*3
+    
+    
+class Light:
+    def __init__(self, intensity, target: tuple | np.ndarray):
+        self.intensity = intensity
+        self.target = np.array(target)/np.linalg.norm(np.array(target))
+
 
 # ============== RENDERING
 class Cam:
@@ -114,12 +148,117 @@ class Render:
         self.clock = pg.time.Clock()
         self.res = res
         self.cam = cam
-           
+        self.bgcolor = (255, 255, 255)
+        
+        # Initialize buffers
+        self.colorBuffer = np.full((*res, 3), self.bgcolor, dtype=np.uint8)
+        self.zBuffer = np.full((res), np.inf, dtype=np.float32)
+        
+    # ============= Rasterizer
+    def rasterize(self, obj: Object, light: Light, XProj,  wireframes=False):
+        verticesProj, vertNDC, _= self.findProjection(obj, obj.vertices)
+        facesVert = obj.vertices[obj.faces]
+        facesVertProj = np.round(verticesProj[obj.faces]).astype(int) # round to ints
+        facesVertNDC = vertNDC[obj.faces]
+        
+        normalsRot = self.rotateNormals(obj)
+        colors = self.findColorLambert(obj, light, normalsRot)
+
+        np.seterr(all='ignore')
+        self.resetColorBuffer()
+        self.resetZBuffer()
+        # Loop over each face   
+        for i in range(obj.faces.shape[0]):
+            # if i > 0:
+            #     break
+            # Bounding box
+            xMin = np.amin(facesVertProj[i,:,0])
+            xMax = np.amax(facesVertProj[i,:,0])
+            yMin = np.amin(facesVertProj[i,:,1])
+            yMax = np.amax(facesVertProj[i,:,1])
+            
+            box = np.mgrid[xMin:xMax+1, yMin:yMax+1].transpose(1,2,0) # grid containing (x,y) coords of each pixel in box
+            
+            # Interpolate z vals
+            V1 = facesVert[i,0,:]
+            V2 = facesVert[i,1,:]
+            V3 = facesVert[i,2,:]
+            V1P = facesVertProj[i,0,:]
+            V2P = facesVertProj[i,1,:]
+            V3P = facesVertProj[i,2,:]
+            Z1NDC = facesVertNDC[i,0,2]
+            Z2NDC = facesVertNDC[i,1,2]
+            Z3NDC = facesVertNDC[i,2,2]
+            
+            D = (V2P[1] - V3P[1]) * (V1P[0] - V3P[0]) + (V3P[0] - V2P[0]) * (V1P[1] - V3P[1])
+            
+            with wn.catch_warnings(record=True) as caught:
+                wn.simplefilter("always", RuntimeWarning)
+                
+                lambda1s = ((V2P[1] - V3P[1]) * (box[:,:,0] - V3P[0]) + (V3P[0] - V2P[0]) * (box[:,:,1] - V3P[1])) / D
+                lambda2s = ((V3P[1] - V1P[1]) * (box[:,:,0] - V3P[0]) + (V1P[0] - V3P[0]) * (box[:,:,1] - V3P[1])) / D
+                lambda3s = 1 - lambda1s - lambda2s
+                
+                if caught: 
+                    lambda1s = np.full(box.shape[:2], -np.inf)
+                    lambda2s = np.full(box.shape[:2], -np.inf)
+                    lambda3s = np.full(box.shape[:2], -np.inf)
+            
+            ZNDCs = -(lambda1s*Z1NDC + lambda2s*Z2NDC + lambda3s*Z3NDC)
+            
+            # Check if points in triangle
+            inTriangle = (lambda1s >= 0) & (lambda2s >= 0) & (lambda3s >= 0)
+            
+            # Check and update z-buffer & color buffer 
+            zGreater = ZNDCs > self.zBuffer[xMin:xMax+1, yMin:yMax+1]
+            self.zBuffer[xMin:xMax+1, yMin:yMax+1][zGreater & inTriangle] = ZNDCs[zGreater & inTriangle]
+            self.colorBuffer[xMin:xMax+1, yMin:yMax+1, :][zGreater & inTriangle] = colors[i,:]
+      
+    def resetColorBuffer(self):
+        self.colorBuffer = np.full((*self.res, 3), self.bgcolor, dtype=np.uint8)
+        
+    def resetZBuffer(self):
+        self.zBuffer = np.full((self.res), -np.inf, dtype=np.float32)
+        
+        
     # ============= Rendering   
-    def render(self, objs: list):
+    def render(self, obj: Object, light: Light):
+        pg.init()
+        running = True
+        t=0
+        
+        while running:
+            t += 0.01
+            self.clock.tick(FRAMERATE)
+            
+            keys = pg.key.get_pressed()
+            for event in pg.event.get():
+                if event.type == pg.QUIT:
+                    running = False
+                    pg.quit()
+                    
+            if keys[pg.K_ESCAPE]:
+                running = False
+                pg.quit()
+            if keys[pg.K_SPACE]:
+                theta = 0
+            if keys[pg.K_c]:
+                theta = np.pi/800
+            if keys[pg.K_x]:
+                theta = -np.pi/800
+                
+            # obj.setRotation(0, t, t)
+                
+            self.rasterize(obj, light, None)
+            surf = pg.surfarray.make_surface(self.colorBuffer)
+            surf = pg.transform.scale(surf, self.res)
+            self.scr.blit(surf, (0,0))
+            pg.display.update()
+    
+    def renderOld(self, objs: list, lights: list):
         obj = objs[0]
         pg.init()
-        self.renderWireframe(obj)
+        self.renderWireframe(obj, lights)
         running = True
         theta = 0
         t=0
@@ -150,9 +289,9 @@ class Render:
                 # obj.setTranslation(-3, np.sin(t*3), -5 + 4*np.cos(t*3))
                 rx, ry, rz = obj.rotation
                 obj.setRotation(0, t, t)
-                obj.setTranslation(0, 0, -5+t)
+                # obj.setTranslation(0, 0, )
                 # obj.setRotation(rx, ry+0.1, rz+0.08)
-                self.renderWireframe(obj)
+                self.renderWireframe(obj, lights)
             
             pg.display.flip()
         
@@ -160,18 +299,27 @@ class Render:
         tVals = np.linspace(0, 1, xVals.shape[1])
         plt.plot(tVals, xVals[:,])
         plt.show()
-            
-    def renderWireframe(self, obj: Object):
-        X, XLinesProj, clipMask, XCrossMask = self.findProjection(obj, obj.scaling, obj.rotation, obj.translation)
-    
-        # Scale X to screen 
-        XScaled = min(self.res)*0.4*X[:,:2]
-        XScaled[:,0] += self.res[0]/2
-        XScaled[:,1] += self.res[1]/2
         
-        XLinesProjScaled = min(self.res)*0.4*XLinesProj[:,:,:,:2]
-        XLinesProjScaled[:,:,:,0] += self.res[0]/2
-        XLinesProjScaled[:,:,:,1] += self.res[1]/2
+    # def drawWireframe(self, obj: Object, light: Light):
+        
+            
+    def renderWireframe(self, obj: Object, light: Light):
+        # Project vertices/lines
+        XVertsProjScaled, XLinesProjScaled, clipMask, XCrossMask = self.projectWireframe(obj)
+        # Project normals
+        normalsRot = self.rotateNormals(obj)
+        colors = self.findColorLambert(obj, light, normalsRot)
+    
+        # # Scale X to screen 
+        # XScaled = min(self.res)*0.4*XVerts[:,:2]
+        # XScaled[:,0] += self.res[0]/2
+        # XScaled[:,1] += self.res[1]/2
+        
+        # XLinesProjScaled = min(self.res)*0.4*XLinesProj[:,:,:,:2]
+        # XLinesProjScaled[:,:,:,0] += self.res[0]/2
+        # XLinesProjScaled[:,:,:,1] += self.res[1]/2
+        
+        XFacesScaled = XVertsProjScaled[obj.faces]
 
         # Draw lines
         for i, row in enumerate(list(XLinesProjScaled)):
@@ -180,7 +328,7 @@ class Render:
                     pg.draw.line(self.scr, 'black', *list(line))
                 
         # Draw vertices
-        for i, vert in enumerate(list(XScaled)):
+        for i, vert in enumerate(list(XVertsProjScaled)):
             if i < 4:
                 color = '#FF0000'
             else: 
@@ -188,122 +336,129 @@ class Render:
             # xVals = np.dstack([xVals, XScaled])
             if clipMask[i]:
                 pg.draw.circle(self.scr, color, vert, 5)
+                
+        # Draw faces
+        for i, face in enumerate(list(XFacesScaled)):
+            if np.dot(normalsRot[i,:], self.cam.target) < 0: 
+                pg.draw.polygon(self.scr, colors[i,:], face)
 
-    def findProjection(self, obj: Object, scaling: np.ndarray, rotation: np.ndarray, translation: np.ndarray):
-        # Model Matrix
-        S = np.array([[scaling[0], 0, 0, 0],
-                      [0, scaling[1], 0, 0],
-                      [0, 0, scaling[2], 0],
-                      [0, 0, 0, 1]])
-        
-        RX = lambda x: np.array([[1, 0, 0, 0],
-                                 [0, np.cos(x), -np.sin(x), 0],
-                                 [0, np.sin(x), np.cos(x), 0],
-                                 [0, 0, 0, 1]])
-        
-        RY = lambda x: np.array([[np.cos(x), 0, np.sin(x), 0],
-                                 [0, 1, 0, 0],
-                                 [-np.sin(x), 0, np.cos(x), 0],
-                                 [0, 0, 0, 1]])
-        
-        RZ = lambda x: np.array([[np.cos(x), -np.sin(x), 0, 0],
-                                 [np.sin(x), np.cos(x), 0, 0],
-                                 [0, 0, 1, 0],
-                                 [0, 0, 0, 1]])
-        
-        R = RZ(rotation[2]) @ RY(rotation[1]) @ RX(rotation[0])
-        
-        T = np.array([[1, 0, 0, translation[0]],
-                      [0, 1, 0, translation[1]],
-                      [0, 0, 1, translation[2]],
-                      [0, 0, 0, 1]])
-        
-        M = T @ R @ S
-        
-        # View Matrix
-        V = np.array([[*self.cam.right, -self.cam.right@self.cam.pos],
-                      [*self.cam.up, -self.cam.up@self.cam.pos],
-                      [*(-self.cam.target), self.cam.target@self.cam.pos],
-                      [0, 0, 0, 1]])
-        
-        # Projection Matrix
-        X = np.hstack([obj.vertices, np.ones((obj.vertices.shape[0], 1))])
-        a = 1 # aspect ratio
-        P = np.array([[1/(a*np.tan(self.cam.fov/2)), 0, 0, 0],
-                      [0, 1/np.tan(self.cam.fov/2), 0, 0], 
-                      [0, 0, -(self.cam.far+self.cam.near)/(self.cam.far-self.cam.near), -2*self.cam.far*self.cam.near/(self.cam.far-self.cam.near)],
-                      [0, 0, -1, 0]])
-        
-        XHom = np.hstack([obj.vertices, np.ones_like(obj.vertices[:,0])[:,None]])
-        XWorld = XHom @ M.T
-        XCam = XWorld @ V.T
-        XClip = XCam @ P.T
-        # XProj = XClip[:,:3]/np.tile(XClip[:,3], (3,1)).T
-        XProj = XClip[:,:3]/XClip[:,3:]
-        
+    def projectWireframe(self, obj: Object):
+        XProj, _, XClip = self.findProjection(obj, obj.vertices)
         clipMask = XClip[:,-2] > -XClip[:,-1]
-        
+
         # Find Projected lines
         XLines = XClip[obj.lines,:]
         XLinesZ = XLines[:,:,:,-2]
         XLinesW = XLines[:,:,:,-1]
-        
+
         XLinesMask = XLinesZ + XLinesW >= 0
-        XStartInsideMask = XLinesMask[:,:,0]
         XCrossMask = XLinesMask[:,:,0] ^ XLinesMask[:,:,1]
 
         f0 = XLinesZ[:,:,0] + XLinesW[:,:,0]
         f1 = XLinesZ[:,:,1] + XLinesW[:,:,1]
         XLinesParams = np.where(XCrossMask, f0/(f0-f1), np.nan)[:,:,None,None]
         XLinesInter0 = XLines[:,:,0:1,:] + XLinesParams*(XLines[:,:,1:2,:]-XLines[:,:,0:1,:])
-        XLinesInter1 = XLines[:,:,1:2,:] + XLinesParams*(XLines[:,:,0:1,:]-XLines[:,:,1:2,:])
-
-        # XLinesClip = np.where(~XLinesMask[:,:,0:1,None] & XCrossMask[:,:,None,None],
-        #                np.concatenate([XLinesInter0, XLines[:,:,1:2,:]], axis=2), XLines)
-        # XLinesClip = np.where(~XLinesMask[:,:,1:2,None] & XCrossMask[:,:,None,None],
-        #                np.concatenate([XLines[:,:,0:1,:], XLinesInter0], axis=2), XLinesClip)
-        
         XLinesClip = np.where(~XLinesMask[:,:,0:1,None] & XCrossMask[:,:,None,None], np.dstack([XLinesInter0[:,:,0:1,:], XLines[:,:,1:2,:]]), XLines)
         XLinesClip = np.where(~XLinesMask[:,:,1:2,None] & XCrossMask[:,:,None,None], np.dstack([XLines[:,:,0:1,:], XLinesInter0[:,:,0:1,:],]), XLinesClip)
         XLinesProj = XLinesClip[:,:,:,:3]/XLinesClip[:,:,:,3:]
-         
-        return XProj, XLinesProj, clipMask, XLinesMask[:,:,0] | XLinesMask[:,:,1] 
+        
+        # Scale to screen
+        XLinesProjScaled = min(self.res)*0.4*XLinesProj[:,:,:,:2]
+        XLinesProjScaled[:,:,:,0] += self.res[0]/2
+        XLinesProjScaled[:,:,:,1] += self.res[1]/2
+
+        return XProj, XLinesProjScaled, clipMask, XLinesMask[:,:,0] | XLinesMask[:,:,1] 
+
+    def findProjection(self, obj: Object, X: np.ndarray):
+        scaling = obj.scaling
+        rotation = obj.rotation
+        translation = obj.translation
+        # Model Matrix
+        S = np.array([[scaling[0], 0, 0, 0],
+                        [0, scaling[1], 0, 0],
+                        [0, 0, scaling[2], 0],
+                        [0, 0, 0, 1]])
+        
+        RX = lambda x: np.array([[1, 0, 0, 0],
+                                    [0, np.cos(x), -np.sin(x), 0],
+                                    [0, np.sin(x), np.cos(x), 0],
+                                    [0, 0, 0, 1]])
+        RY = lambda x: np.array([[np.cos(x), 0, np.sin(x), 0],
+                                    [0, 1, 0, 0],
+                                    [-np.sin(x), 0, np.cos(x), 0],
+                                    [0, 0, 0, 1]])
+        RZ = lambda x: np.array([[np.cos(x), -np.sin(x), 0, 0],
+                                    [np.sin(x), np.cos(x), 0, 0],
+                                    [0, 0, 1, 0],
+                                    [0, 0, 0, 1]])
+        R = RZ(rotation[2]) @ RY(rotation[1]) @ RX(rotation[0])
+        
+        T = np.array([[1, 0, 0, translation[0]],
+                        [0, 1, 0, translation[1]],
+                        [0, 0, 1, translation[2]],
+                        [0, 0, 0, 1]])
+        
+        M = T @ R @ S
+        
+        # View Matrix
+        V = np.array([[*self.cam.right, -self.cam.right@self.cam.pos],
+                        [*self.cam.up, -self.cam.up@self.cam.pos],
+                        [*(-self.cam.target), self.cam.target@self.cam.pos],
+                        [0, 0, 0, 1]])
+        
+        # Projection Matrix
+        a = 1 # aspect ratio
+        P = np.array([[1/(a*np.tan(self.cam.fov/2)), 0, 0, 0],
+                        [0, 1/np.tan(self.cam.fov/2), 0, 0], 
+                        [0, 0, -(self.cam.far+self.cam.near)/(self.cam.far-self.cam.near), -2*self.cam.far*self.cam.near/(self.cam.far-self.cam.near)],
+                        [0, 0, -1, 0]])
+        
+        # Apply Projection
+        XHom = np.hstack([X, np.ones_like(X[:,0])[:,None]])
+        XWorld = XHom @ M.T
+        XCam = XWorld @ V.T
+        XClip = XCam @ P.T
+        XProj = XClip[:,:3]/XClip[:,3:]
+        
+        # Scale XProj to screen
+        XScaled = min(self.res)*0.4*XProj[:,:2]
+        XScaled[:,0] += self.res[0]/2
+        XScaled[:,1] += self.res[1]/2
+        
+        return XScaled, XProj, XClip
+    
+    def rotateNormals(self, obj: Object):
+        rotation = obj.rotation
+        
+        RX = lambda x: np.array([[1, 0, 0, 0],
+                                    [0, np.cos(x), -np.sin(x), 0],
+                                    [0, np.sin(x), np.cos(x), 0],
+                                    [0, 0, 0, 1]])
+        RY = lambda x: np.array([[np.cos(x), 0, np.sin(x), 0],
+                                    [0, 1, 0, 0],
+                                    [-np.sin(x), 0, np.cos(x), 0],
+                                    [0, 0, 0, 1]])
+        RZ = lambda x: np.array([[np.cos(x), -np.sin(x), 0, 0],
+                                    [np.sin(x), np.cos(x), 0, 0],
+                                    [0, 0, 1, 0],
+                                    [0, 0, 0, 1]])
+        R = RZ(rotation[2]) @ RY(rotation[1]) @ RX(rotation[0])
+        
+        normalsWorld = obj.normals @ R[:3, :3].T
+        
+        return normalsWorld
+
+    def findColorLambert(self, obj: Object, light: Light, normals: np.ndarray):
+        return obj.color[None,:] * light.intensity * np.maximum(0, -normals @ light.target.T)[:,None]
 
 # ========================= FUNCTIONS ==========================
 def main():
+    light = Light(1, (0, 0, -1))
     cam = Cam((0,0,0), (0,0,-1), (0,1,0), 90, 0.1, 50)
-    # obj1 = Object(0.5*np.array([[2, 2, 2],
-    #                         [2, -2, 2],
-    #                         [-2, 2, 2],
-    #                         [-2, -2, 2],
-    #                         [2, 2, 4],
-    #                         [2, -2, 4],
-    #                         [-2, 2, 4],
-    #                         [-2, -2, 4]]),
-    #               np.array([]))
     render = Render((1000, 800), cam)
-    # cube1 = Cube(np.array([[1,1,1],
-    #                     [1, -1, 1],
-    #                     [-1,1, 3],
-    #                     [-1,-1,1],
-    #                     [-1,1,1],
-    #                     [1,1, 3],
-    #                     [1,-1, 3],
-    #                     [-1,-1,3]]))
+    cube3 = Cube((0,0,-5), (45,30,90), 2, (255,0,0))
     
-    # cube2 = Cube(np.array([[2, 2, -6],
-    #                         [2, -2, -6],
-    #                         [-2, 2, -6],
-    #                         [-2, -2, -6],
-    #                         [2, 2, -2],
-    #                         [2, -2, -2],
-    #                         [-2, 2, -2],
-    #                         [-2, -2, -2]]))
-    
-    cube3 = Cube((0,0,-5),(0,0,0),2)
-                           
-    
-    render.render([cube3])
+    render.render(cube3, light)
     
 
 if __name__ == '__main__':
