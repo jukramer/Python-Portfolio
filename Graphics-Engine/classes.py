@@ -1,6 +1,7 @@
 import colorsys as cls
 import itertools as it
 import matplotlib.pyplot as plt
+from numba import jit
 import numpy as np
 import pygame as pg
 import warnings as wn
@@ -167,6 +168,10 @@ class Render:
         np.seterr(all='ignore')
         self.resetColorBuffer()
         self.resetZBuffer()
+        
+        self.colorBuffer = rasterizeInt(obj.faces.shape[0], facesVert, facesVertProj, facesVertNDC, self.zBuffer, self.colorBuffer, colors)
+        
+        return 
         # Loop over each face   
         for i in range(obj.faces.shape[0]):
             # if i > 0:
@@ -247,7 +252,7 @@ class Render:
             if keys[pg.K_x]:
                 theta = -np.pi/800
                 
-            # obj.setRotation(0, t, t)
+            obj.setRotation(0, 90*t, 90*t)
                 
             self.rasterize(obj, light, None)
             surf = pg.surfarray.make_surface(self.colorBuffer)
@@ -452,6 +457,72 @@ class Render:
         return obj.color[None,:] * light.intensity * np.maximum(0, -normals @ light.target.T)[:,None]
 
 # ========================= FUNCTIONS ==========================
+@jit(nopython=True)
+def rasterizeInt(nFaces, facesVert, facesVertProj, facesVertNDC, zBuffer, colorBuffer, colors):
+    for i in range(nFaces):
+        # if i > 0:
+        #     break
+        # Bounding box
+        xMin = np.amin(facesVertProj[i,:,0])
+        xMax = np.amax(facesVertProj[i,:,0])
+        yMin = np.amin(facesVertProj[i,:,1])
+        yMax = np.amax(facesVertProj[i,:,1])
+        
+        # xs, ys = np.ogrid[xMin:xMax+1, yMin:yMax+1] # grid containing (x,y) coords of each pixel in box
+        xs = np.arange(xMin, xMax+1)[:,None]
+        ys = np.arange(yMin, yMax+1)[None,:]
+        
+        # Interpolate z vals
+        V1 = facesVert[i,0,:]
+        V2 = facesVert[i,1,:]
+        V3 = facesVert[i,2,:]
+        V1P = facesVertProj[i,0,:]
+        V2P = facesVertProj[i,1,:]
+        V3P = facesVertProj[i,2,:]
+        Z1NDC = facesVertNDC[i,0,2]
+        Z2NDC = facesVertNDC[i,1,2]
+        Z3NDC = facesVertNDC[i,2,2]
+        
+        D = (V2P[1] - V3P[1]) * (V1P[0] - V3P[0]) + (V3P[0] - V2P[0]) * (V1P[1] - V3P[1])
+        
+        lambda1s = ((V2P[1] - V3P[1]) * (xs[:,:] - V3P[0]) + (V3P[0] - V2P[0]) * (ys[:,:] - V3P[1])) / D
+        lambda2s = ((V3P[1] - V1P[1]) * (xs[:,:] - V3P[0]) + (V1P[0] - V3P[0]) * (ys[:,:] - V3P[1])) / D
+        lambda3s = 1 - lambda1s - lambda2s
+        
+        if D == 0: 
+            lambda1s = np.full((xs.shape[0], ys.shape[1]), -np.inf)
+            lambda2s = np.full((xs.shape[0], ys.shape[1]), -np.inf)
+            lambda3s = np.full((xs.shape[0], ys.shape[1]), -np.inf)
+        
+        
+        ZNDCs = -(lambda1s*Z1NDC + lambda2s*Z2NDC + lambda3s*Z3NDC)
+        
+        for x in range(xMin, xMax + 1):
+            for y in range(yMin, yMax + 1):
+                lambda1 = ((V2P[1] - V3P[1]) * (x - V3P[0]) + (V3P[0] - V2P[0]) * (y - V3P[1])) / D
+                lambda2 = ((V3P[1] - V1P[1]) * (x - V3P[0]) + (V1P[0] - V3P[0]) * (y - V3P[1])) / D
+                lambda3 = 1 - lambda1 - lambda2
+                
+                if lambda1 >= 0 and lambda2 >= 0 and lambda3 >= 0:
+                    zNDC = -(lambda1*Z1NDC + lambda2*Z2NDC + lambda3*Z3NDC)
+                    if zNDC > zBuffer[x, y]:
+                        zBuffer[x, y] = zNDC
+                        colorBuffer[x, y, 0] = colors[i, 0]
+                        colorBuffer[x, y, 1] = colors[i, 1]
+                        colorBuffer[x, y, 2] = colors[i, 2]
+        
+        # Check if points in triangle
+        # inTriangle = (lambda1s >= 0) & (lambda2s >= 0) & (lambda3s >= 0)
+        
+        # # Check and update z-buffer & color buffer 
+        # zGreater = ZNDCs > zBuffer[xMin:xMax+1, yMin:yMax+1]
+        
+        # zBuffer[xMin:xMax+1, yMin:yMax+1][zGreater & inTriangle] = ZNDCs[zGreater & inTriangle]
+        # colorBuffer[xMin:xMax+1, yMin:yMax+1, :][zGreater & inTriangle] = colors[i,:]
+        
+    return colorBuffer
+    
+
 def main():
     light = Light(1, (0, 0, -1))
     cam = Cam((0,0,0), (0,0,-1), (0,1,0), 90, 0.1, 50)
