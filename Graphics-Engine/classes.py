@@ -1,9 +1,9 @@
 import colorsys as cls
 import itertools as it
+from numba import jit
 import matplotlib.pyplot as plt
 import numpy as np
 import pygame as pg
-import warnings as wn
 
 RX = lambda x: np.array([[1, 0, 0],
                          [0, np.cos(x), -np.sin(x)],
@@ -148,11 +148,11 @@ class Render:
         self.clock = pg.time.Clock()
         self.res = res
         self.cam = cam
-        self.bgcolor = (255, 255, 255)
+        self.bgcolor = (255, 150, 150)
         
         # Initialize buffers
         self.colorBuffer = np.full((*res, 3), self.bgcolor, dtype=np.uint8)
-        self.zBuffer = np.full((res), np.inf, dtype=np.float32)
+        self.zBuffer = np.full((12, *res), np.inf, dtype=np.float32)
         
     # ============= Rasterizer
     def rasterize(self, obj: Object, light: Light, XProj,  wireframes=False):
@@ -164,10 +164,64 @@ class Render:
         normalsRot = self.rotateNormals(obj)
         colors = self.findColorLambert(obj, light, normalsRot)
 
-        np.seterr(all='ignore')
-        self.resetColorBuffer()
-        self.resetZBuffer()
-        # Loop over each face   
+        self.resetBuffers()
+        
+        xMins = np.amin(facesVertProj[:,:,0], axis=1)
+        xMaxs = np.minimum(np.amax(facesVertProj[:,:,0], axis=1), self.res[0])
+        yMins = np.amin(facesVertProj[:,:,1], axis=1)
+        yMaxs = np.minimum(np.amax(facesVertProj[:,:,1], axis=1), self.res[1])
+        
+        dxs = xMaxs - xMins + 1
+        dys = yMaxs - yMins + 1
+        
+        xs = np.arange(np.amax(dxs))[None,:]
+        xs = xs + xMins[:,None]
+        ys = np.arange(np.amax(dys))[None,:]
+        ys = ys + yMins[:,None]
+        
+        xs = np.minimum(xs, self.res[0]-1)
+        ys = np.minimum(ys, self.res[1]-1)
+        
+        # xs, ys = np.ogrid[xMin:xMax+1, yMin:yMax+1]
+        
+        V1Ps = facesVertProj[:,0,:]
+        V2Ps = facesVertProj[:,1,:]
+        V3Ps = facesVertProj[:,2,:]
+        Z1NDCs = facesVertNDC[:,0,2][:,None,None]
+        Z2NDCs = facesVertNDC[:,1,2][:,None,None]
+        Z3NDCs = facesVertNDC[:,2,2][:,None,None]
+        
+        Ds = (V2Ps[:,1] - V3Ps[:,1]) * (V1Ps[:,0] - V3Ps[:,0]) + (V3Ps[:,0] - V2Ps[:,0]) * (V1Ps[:,1] - V3Ps[:,1])
+        
+        lambda1s = (((V2Ps[:,1] - V3Ps[:,1])[:,None] * (xs - V3Ps[:,0,None]))[:,:,None] + ((V3Ps[:,0,None] - V2Ps[:,0,None]) * (ys - V3Ps[:,1,None]))[:,None,:]) / Ds[:,None,None]
+        lambda2s = (((V3Ps[:,1] - V1Ps[:,1])[:,None] * (xs - V3Ps[:,0,None]))[:,:,None] + ((V1Ps[:,0,None] - V3Ps[:,0,None]) * (ys - V3Ps[:,1,None]))[:,None,:]) / Ds[:,None,None]
+        lambda3s = 1 - lambda1s - lambda2s
+        
+        Dmask = np.isclose(Ds, 0)
+        
+        if np.dot(Dmask, Dmask):
+            lambda1s[Dmask,:,:] = -np.inf
+            lambda2s[Dmask,:,:] = -np.inf
+            lambda3s[Dmask,:,:] = -np.inf
+            
+        inTriangle = (lambda1s >= 0) & (lambda2s >= 0) & (lambda3s >= 0)
+        ZNDCs = -(lambda1s*Z1NDCs + lambda2s*Z2NDCs + lambda3s*Z3NDCs)
+        ZNDCs[~inTriangle] = -np.inf # set z values not inside triangle to -inf
+        
+        self.zBuffer[np.arange(12)[:,None,None], xs[:,:,None], ys[:,None,:]] = ZNDCs
+        maxZ = self.zBuffer.max(axis=0)
+        faceAtPixel = self.zBuffer.argmax(axis=0)
+        covered = maxZ > -np.inf
+        self.colorBuffer[covered] = colors[faceAtPixel[covered]]
+        
+        # self.colorBuffer[] = colors[np.argmin(ZNDCs, axis=0)]
+        #TODO: find way to flatten x/y coords into color buffer
+        
+        
+        # # self.zBuffer[xMin:xMax+1, yMin:yMax+1][zGreater & inTriangle] = ZNDCs[zGreater & inTriangle]
+        # self.colorBuffer[xMin:xMax+1, yMin:yMax+1, :][zGreater & inTriangle] = colors[i,:]
+        
+        return 
         for i in range(obj.faces.shape[0]):
             # if i > 0:
             #     break
@@ -176,13 +230,15 @@ class Render:
             xMax = np.amax(facesVertProj[i,:,0])
             yMin = np.amin(facesVertProj[i,:,1])
             yMax = np.amax(facesVertProj[i,:,1])
+            dx = xMax - xMin + 1
+            dy = yMax - yMin + 1
             
-            box = np.mgrid[xMin:xMax+1, yMin:yMax+1].transpose(1,2,0) # grid containing (x,y) coords of each pixel in box
+            # xs = np.arange(xMin, xMax+1)
+            # ys = np.arange(yMin, yMax+1)
+            xs, ys = np.ogrid[xMin:xMax+1,yMin:yMax+1]
+            # box = np.mgrid[xMin:xMax+1, yMin:yMax+1].transpose(1,2,0) # grid containing (x,y) coords of each pixel in box
             
             # Interpolate z vals
-            V1 = facesVert[i,0,:]
-            V2 = facesVert[i,1,:]
-            V3 = facesVert[i,2,:]
             V1P = facesVertProj[i,0,:]
             V2P = facesVertProj[i,1,:]
             V3P = facesVertProj[i,2,:]
@@ -191,18 +247,15 @@ class Render:
             Z3NDC = facesVertNDC[i,2,2]
             
             D = (V2P[1] - V3P[1]) * (V1P[0] - V3P[0]) + (V3P[0] - V2P[0]) * (V1P[1] - V3P[1])
+                
+            lambda1s = ((V2P[1] - V3P[1]) * (xs - V3P[0]) + (V3P[0] - V2P[0]) * (ys - V3P[1])) / D
+            lambda2s = ((V3P[1] - V1P[1]) * (xs - V3P[0]) + (V1P[0] - V3P[0]) * (ys - V3P[1])) / D
+            lambda3s = 1 - lambda1s - lambda2s
             
-            with wn.catch_warnings(record=True) as caught:
-                wn.simplefilter("always", RuntimeWarning)
-                
-                lambda1s = ((V2P[1] - V3P[1]) * (box[:,:,0] - V3P[0]) + (V3P[0] - V2P[0]) * (box[:,:,1] - V3P[1])) / D
-                lambda2s = ((V3P[1] - V1P[1]) * (box[:,:,0] - V3P[0]) + (V1P[0] - V3P[0]) * (box[:,:,1] - V3P[1])) / D
-                lambda3s = 1 - lambda1s - lambda2s
-                
-                if caught: 
-                    lambda1s = np.full(box.shape[:2], -np.inf)
-                    lambda2s = np.full(box.shape[:2], -np.inf)
-                    lambda3s = np.full(box.shape[:2], -np.inf)
+            if np.isclose(D, 0):
+                lambda1s = np.full((dx, dy), -np.inf)
+                lambda2s = np.full((dx, dy), -np.inf)
+                lambda3s = np.full((dx, dy), -np.inf)
             
             ZNDCs = -(lambda1s*Z1NDC + lambda2s*Z2NDC + lambda3s*Z3NDC)
             
@@ -214,18 +267,18 @@ class Render:
             self.zBuffer[xMin:xMax+1, yMin:yMax+1][zGreater & inTriangle] = ZNDCs[zGreater & inTriangle]
             self.colorBuffer[xMin:xMax+1, yMin:yMax+1, :][zGreater & inTriangle] = colors[i,:]
       
-    def resetColorBuffer(self):
-        self.colorBuffer = np.full((*self.res, 3), self.bgcolor, dtype=np.uint8)
-        
-    def resetZBuffer(self):
-        self.zBuffer = np.full((self.res), -np.inf, dtype=np.float32)
-        
+    def resetBuffers(self):
+        self.colorBuffer[:,:] = self.bgcolor
+        self.zBuffer.fill(-np.inf)
         
     # ============= Rendering   
     def render(self, obj: Object, light: Light):
         pg.init()
         running = True
         t=0
+        
+        surf = pg.surfarray.make_surface(self.colorBuffer)
+        self.scr.blit(surf, (0,0))
         
         while running:
             t += 0.01
@@ -247,16 +300,13 @@ class Render:
             if keys[pg.K_x]:
                 theta = -np.pi/800
                 
-            # obj.setRotation(0, t, t)
-                
+            obj.setRotation(0, t*90, t*90)
             self.rasterize(obj, light, None)
-            surf = pg.surfarray.make_surface(self.colorBuffer)
-            surf = pg.transform.scale(surf, self.res)
+            pg.surfarray.blit_array(surf, self.colorBuffer)
             self.scr.blit(surf, (0,0))
             pg.display.update()
     
-    def renderOld(self, objs: list, lights: list):
-        obj = objs[0]
+    def renderPG(self, obj: list, lights: list):
         pg.init()
         self.renderWireframe(obj, lights)
         running = True
@@ -285,13 +335,13 @@ class Render:
                 theta = -np.pi/800
             # Draw Scene   
             self.scr.fill("#FFFFFF")
-            for obj in objs:
-                # obj.setTranslation(-3, np.sin(t*3), -5 + 4*np.cos(t*3))
-                rx, ry, rz = obj.rotation
-                obj.setRotation(0, t, t)
-                # obj.setTranslation(0, 0, )
-                # obj.setRotation(rx, ry+0.1, rz+0.08)
-                self.renderWireframe(obj, lights)
+            
+            # obj.setTranslation(-3, np.sin(t*3), -5 + 4*np.cos(t*3))
+            rx, ry, rz = obj.rotation
+            obj.setRotation(0, t*90, t*90)
+            # obj.setTranslation(0, 0, )
+            # obj.setRotation(rx, ry+0.1, rz+0.08)
+            self.renderWireframe(obj, lights)
             
             pg.display.flip()
         
@@ -300,9 +350,6 @@ class Render:
         plt.plot(tVals, xVals[:,])
         plt.show()
         
-    # def drawWireframe(self, obj: Object, light: Light):
-        
-            
     def renderWireframe(self, obj: Object, light: Light):
         # Project vertices/lines
         XVertsProjScaled, XLinesProjScaled, clipMask, XCrossMask = self.projectWireframe(obj)
