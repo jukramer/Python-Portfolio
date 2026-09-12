@@ -4,7 +4,6 @@ import matplotlib.pyplot as plt
 from numba import jit
 import numpy as np
 import pygame as pg
-import warnings as wn
 
 RX = lambda x: np.array([[1, 0, 0],
                          [0, np.cos(x), -np.sin(x)],
@@ -156,81 +155,48 @@ class Render:
         self.zBuffer = np.full((res), np.inf, dtype=np.float32)
         
     # ============= Rasterizer
-    def rasterize(self, obj: Object, light: Light, XProj,  wireframes=False):
-        verticesProj, vertNDC, _= self.findProjection(obj, obj.vertices)
-        facesVert = obj.vertices[obj.faces]
-        facesVertProj = np.round(verticesProj[obj.faces]).astype(int) # round to ints
-        facesVertNDC = vertNDC[obj.faces]
+    def rasterize(self, objs: Object, light: Light, XProj,  wireframes=False) -> None:
+        if not type(objs) == list:
+            objs = [objs]
         
-        normalsRot = self.rotateNormals(obj)
-        colors = self.findColorLambert(obj, light, normalsRot)
+        # First object
+        verticesProj, vertNDC, _= self.findProjection(objs[0], objs[0].vertices)
+        facesVert = objs[0].vertices[objs[0].faces]
+        facesVertProj = np.round(verticesProj[objs[0].faces]).astype(int) # round to ints
+        facesVertNDC = vertNDC[objs[0].faces]
+        
+        normalsRot = self.rotateNormals(objs[0])
+        colors = self.findColorLambert(objs[0], light, normalsRot)
+
+        for i, obj in enumerate(objs):
+            if i > 0:
+                verticesProj, vertNDC, _= self.findProjection(obj, obj.vertices)
+                facesVert = np.vstack([obj.vertices[obj.faces], facesVert])
+                facesVertProj = np.vstack([np.round(verticesProj[obj.faces]).astype(int), facesVertProj]) # round to ints
+                facesVertNDC = np.vstack([vertNDC[obj.faces], facesVertNDC])
+                
+                normalsRot = self.rotateNormals(obj)
+                colors = np.vstack([self.findColorLambert(obj, light, normalsRot), colors])
 
         np.seterr(all='ignore')
         self.resetColorBuffer()
         self.resetZBuffer()
-        
-        self.colorBuffer = rasterizeInt(obj.faces.shape[0], facesVert, facesVertProj, facesVertNDC, self.zBuffer, self.colorBuffer, colors)
-        
-        return 
-        # Loop over each face   
-        for i in range(obj.faces.shape[0]):
-            # if i > 0:
-            #     break
-            # Bounding box
-            xMin = np.amin(facesVertProj[i,:,0])
-            xMax = np.amax(facesVertProj[i,:,0])
-            yMin = np.amin(facesVertProj[i,:,1])
-            yMax = np.amax(facesVertProj[i,:,1])
-            
-            box = np.mgrid[xMin:xMax+1, yMin:yMax+1].transpose(1,2,0) # grid containing (x,y) coords of each pixel in box
-            
-            # Interpolate z vals
-            V1 = facesVert[i,0,:]
-            V2 = facesVert[i,1,:]
-            V3 = facesVert[i,2,:]
-            V1P = facesVertProj[i,0,:]
-            V2P = facesVertProj[i,1,:]
-            V3P = facesVertProj[i,2,:]
-            Z1NDC = facesVertNDC[i,0,2]
-            Z2NDC = facesVertNDC[i,1,2]
-            Z3NDC = facesVertNDC[i,2,2]
-            
-            D = (V2P[1] - V3P[1]) * (V1P[0] - V3P[0]) + (V3P[0] - V2P[0]) * (V1P[1] - V3P[1])
-            
-            with wn.catch_warnings(record=True) as caught:
-                wn.simplefilter("always", RuntimeWarning)
-                
-                lambda1s = ((V2P[1] - V3P[1]) * (box[:,:,0] - V3P[0]) + (V3P[0] - V2P[0]) * (box[:,:,1] - V3P[1])) / D
-                lambda2s = ((V3P[1] - V1P[1]) * (box[:,:,0] - V3P[0]) + (V1P[0] - V3P[0]) * (box[:,:,1] - V3P[1])) / D
-                lambda3s = 1 - lambda1s - lambda2s
-                
-                if caught: 
-                    lambda1s = np.full(box.shape[:2], -np.inf)
-                    lambda2s = np.full(box.shape[:2], -np.inf)
-                    lambda3s = np.full(box.shape[:2], -np.inf)
-            
-            ZNDCs = -(lambda1s*Z1NDC + lambda2s*Z2NDC + lambda3s*Z3NDC)
-            
-            # Check if points in triangle
-            inTriangle = (lambda1s >= 0) & (lambda2s >= 0) & (lambda3s >= 0)
-            
-            # Check and update z-buffer & color buffer 
-            zGreater = ZNDCs > self.zBuffer[xMin:xMax+1, yMin:yMax+1]
-            self.zBuffer[xMin:xMax+1, yMin:yMax+1][zGreater & inTriangle] = ZNDCs[zGreater & inTriangle]
-            self.colorBuffer[xMin:xMax+1, yMin:yMax+1, :][zGreater & inTriangle] = colors[i,:]
-      
-    def resetColorBuffer(self):
+        self.colorBuffer = rasterizeJit(facesVert.shape[0], facesVert, facesVertProj, facesVertNDC, self.zBuffer, self.colorBuffer, colors)
+
+    def resetColorBuffer(self) -> None:
         self.colorBuffer = np.full((*self.res, 3), self.bgcolor, dtype=np.uint8)
         
-    def resetZBuffer(self):
+    def resetZBuffer(self) -> None:
         self.zBuffer = np.full((self.res), -np.inf, dtype=np.float32)
         
-        
     # ============= Rendering   
-    def render(self, obj: Object, light: Light):
+    def render(self, objs: list[Object], light: Light) -> None:
         pg.init()
         running = True
         t=0
+        
+        if not type(objs) == list:
+            objs = [objs]
         
         while running:
             t += 0.01
@@ -252,15 +218,17 @@ class Render:
             if keys[pg.K_x]:
                 theta = -np.pi/800
                 
-            obj.setRotation(0, 90*t, 90*t)
+            for i, obj in enumerate(objs):
+                obj.setRotation(0, 90*t, 0)
+                obj.setTranslation(5*np.cos(t+np.pi*i),5*np.sin(t+np.pi*i),-10)
                 
-            self.rasterize(obj, light, None)
+            self.rasterize(objs, light, None)
             surf = pg.surfarray.make_surface(self.colorBuffer)
             surf = pg.transform.scale(surf, self.res)
             self.scr.blit(surf, (0,0))
             pg.display.update()
     
-    def renderOld(self, objs: list, lights: list):
+    def renderOld(self, objs: list, lights: list) -> None:
         obj = objs[0]
         pg.init()
         self.renderWireframe(obj, lights)
@@ -305,9 +273,6 @@ class Render:
         plt.plot(tVals, xVals[:,])
         plt.show()
         
-    # def drawWireframe(self, obj: Object, light: Light):
-        
-            
     def renderWireframe(self, obj: Object, light: Light):
         # Project vertices/lines
         XVertsProjScaled, XLinesProjScaled, clipMask, XCrossMask = self.projectWireframe(obj)
@@ -457,25 +422,17 @@ class Render:
         return obj.color[None,:] * light.intensity * np.maximum(0, -normals @ light.target.T)[:,None]
 
 # ========================= FUNCTIONS ==========================
-@jit(nopython=True)
-def rasterizeInt(nFaces, facesVert, facesVertProj, facesVertNDC, zBuffer, colorBuffer, colors):
+@jit(nopython=True, cache=True)
+def rasterizeJit(nFaces, facesVert, facesVertProj, facesVertNDC, zBuffer, colorBuffer, colors):
     for i in range(nFaces):
-        # if i > 0:
-        #     break
         # Bounding box
+        # print('---------------')
         xMin = np.amin(facesVertProj[i,:,0])
         xMax = np.amax(facesVertProj[i,:,0])
         yMin = np.amin(facesVertProj[i,:,1])
         yMax = np.amax(facesVertProj[i,:,1])
-        
-        # xs, ys = np.ogrid[xMin:xMax+1, yMin:yMax+1] # grid containing (x,y) coords of each pixel in box
-        xs = np.arange(xMin, xMax+1)[:,None]
-        ys = np.arange(yMin, yMax+1)[None,:]
-        
+
         # Interpolate z vals
-        V1 = facesVert[i,0,:]
-        V2 = facesVert[i,1,:]
-        V3 = facesVert[i,2,:]
         V1P = facesVertProj[i,0,:]
         V2P = facesVertProj[i,1,:]
         V3P = facesVertProj[i,2,:]
@@ -485,23 +442,16 @@ def rasterizeInt(nFaces, facesVert, facesVertProj, facesVertNDC, zBuffer, colorB
         
         D = (V2P[1] - V3P[1]) * (V1P[0] - V3P[0]) + (V3P[0] - V2P[0]) * (V1P[1] - V3P[1])
         
-        lambda1s = ((V2P[1] - V3P[1]) * (xs[:,:] - V3P[0]) + (V3P[0] - V2P[0]) * (ys[:,:] - V3P[1])) / D
-        lambda2s = ((V3P[1] - V1P[1]) * (xs[:,:] - V3P[0]) + (V1P[0] - V3P[0]) * (ys[:,:] - V3P[1])) / D
-        lambda3s = 1 - lambda1s - lambda2s
-        
-        if D == 0: 
-            lambda1s = np.full((xs.shape[0], ys.shape[1]), -np.inf)
-            lambda2s = np.full((xs.shape[0], ys.shape[1]), -np.inf)
-            lambda3s = np.full((xs.shape[0], ys.shape[1]), -np.inf)
-        
-        
-        ZNDCs = -(lambda1s*Z1NDC + lambda2s*Z2NDC + lambda3s*Z3NDC)
-        
         for x in range(xMin, xMax + 1):
             for y in range(yMin, yMax + 1):
-                lambda1 = ((V2P[1] - V3P[1]) * (x - V3P[0]) + (V3P[0] - V2P[0]) * (y - V3P[1])) / D
-                lambda2 = ((V3P[1] - V1P[1]) * (x - V3P[0]) + (V1P[0] - V3P[0]) * (y - V3P[1])) / D
-                lambda3 = 1 - lambda1 - lambda2
+                if np.isclose(D, 0):
+                    lambda1 = -np.inf
+                    lambda2 = -np.inf
+                    lambda3 = -np.inf
+                else:
+                    lambda1 = ((V2P[1] - V3P[1]) * (x - V3P[0]) + (V3P[0] - V2P[0]) * (y - V3P[1])) / D
+                    lambda2 = ((V3P[1] - V1P[1]) * (x - V3P[0]) + (V1P[0] - V3P[0]) * (y - V3P[1])) / D
+                    lambda3 = 1 - lambda1 - lambda2
                 
                 if lambda1 >= 0 and lambda2 >= 0 and lambda3 >= 0:
                     zNDC = -(lambda1*Z1NDC + lambda2*Z2NDC + lambda3*Z3NDC)
@@ -511,25 +461,17 @@ def rasterizeInt(nFaces, facesVert, facesVertProj, facesVertNDC, zBuffer, colorB
                         colorBuffer[x, y, 1] = colors[i, 1]
                         colorBuffer[x, y, 2] = colors[i, 2]
         
-        # Check if points in triangle
-        # inTriangle = (lambda1s >= 0) & (lambda2s >= 0) & (lambda3s >= 0)
-        
-        # # Check and update z-buffer & color buffer 
-        # zGreater = ZNDCs > zBuffer[xMin:xMax+1, yMin:yMax+1]
-        
-        # zBuffer[xMin:xMax+1, yMin:yMax+1][zGreater & inTriangle] = ZNDCs[zGreater & inTriangle]
-        # colorBuffer[xMin:xMax+1, yMin:yMax+1, :][zGreater & inTriangle] = colors[i,:]
-        
     return colorBuffer
     
 
 def main():
-    light = Light(1, (0, 0, -1))
+    light = Light(1, (0, 1, -1))
     cam = Cam((0,0,0), (0,0,-1), (0,1,0), 90, 0.1, 50)
     render = Render((1000, 800), cam)
-    cube3 = Cube((0,0,-5), (45,30,90), 2, (255,0,0))
+    cube3 = Cube((-4,-2,-10), (45,30,90), 2, (50,120,255))
+    cube4 = Cube((2,3,-7), (45,30,90), 2, (255,120,150))
     
-    render.render(cube3, light)
+    render.render([cube3, cube4], light)
     
 
 if __name__ == '__main__':
